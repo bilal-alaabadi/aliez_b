@@ -27,7 +27,15 @@ router.post("/uploadImages", async (req, res) => {
 // POST /api/products/create-product
 router.post("/create-product", async (req, res) => {
   try {
-    const ALLOWED = ["المواد العطرية والادوات","الزيوت العطرية","العطور","البخور"];
+    const ALLOWED = [
+  "عطور مستوحاة",
+  "أدوات المصمم",
+  "العود و البخور",
+  "Flankers",
+  "الزيوت العطرية",
+  "المتوسم (عطور حصرية)"
+]
+;
 
     let { name, category, description, oldPrice, price, image, author, inStock } = req.body;
 

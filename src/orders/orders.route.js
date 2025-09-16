@@ -61,10 +61,14 @@ router.post("/create-checkout-session", async (req, res) => {
     country,
     wilayat,
     description,
-    depositMode, // إذا true: المقدم 10 ر.ع (من ضمنه التوصيل)
-    giftCard,    // { from, to, phone, note } اختياري (على مستوى الطلب)
-    gulfCountry, // الدولة المختارة داخل "دول الخليج" (إن وُجدت)
+    depositMode,
+    giftCard,
+    gulfCountry,
   } = req.body;
+
+  // ✅ تطبيع الدولة للحفظ: إن كانت "دول الخليج" استخدم الدولة المختارة
+  const normalizedCountry =
+    country === "دول الخليج" && gulfCountry ? gulfCountry : country;
 
   // رسوم الشحن (ر.ع.)
   const shippingFee =
@@ -72,14 +76,13 @@ router.post("/create-checkout-session", async (req, res) => {
       ? (gulfCountry === "الإمارات" ? 4 : 5)
       : 2;
 
-  const DEPOSIT_AMOUNT_OMR = 10; // المقدم الثابت
+  const DEPOSIT_AMOUNT_OMR = 10;
 
   if (!Array.isArray(products) || products.length === 0) {
     return res.status(400).json({ error: "Invalid or empty products array" });
   }
 
   try {
-    // المجاميع كما في Checkout.jsx
     const productsSubtotal = products.reduce(
       (sum, p) => sum + Number(p.price || 0) * Number(p.quantity || 0),
       0
@@ -95,18 +98,16 @@ router.post("/create-checkout-session", async (req, res) => {
     let amountToCharge = 0;
 
     if (depositMode) {
-      // دفعة مقدم 10 ر.ع (من ضمنه التوصيل)
       lineItems = [
         { name: "دفعة مقدم", quantity: 1, unit_amount: toBaisa(DEPOSIT_AMOUNT_OMR) },
       ];
       amountToCharge = DEPOSIT_AMOUNT_OMR;
     } else {
-      // توزيع خصم الشيلات داخل سعر الوحدة لكل منتج
       lineItems = products.map((p) => {
         const unitBase = Number(p.price || 0);
         const qty = Math.max(1, Number(p.quantity || 1));
         const productDiscount = pairDiscountForProduct(p);
-        const unitAfterDiscount = Math.max(0.1, unitBase - productDiscount / qty); // لا يقل عن 0.100
+        const unitAfterDiscount = Math.max(0.1, unitBase - productDiscount / qty);
         return {
           name: String(p.name || "منتج"),
           quantity: qty,
@@ -114,7 +115,6 @@ router.post("/create-checkout-session", async (req, res) => {
         };
       });
 
-      // بند الشحن كبند مستقل
       lineItems.push({
         name: "رسوم الشحن",
         quantity: 1,
@@ -126,39 +126,35 @@ router.post("/create-checkout-session", async (req, res) => {
 
     const nowId = Date.now().toString();
 
-    // حمولة الطلب الكاملة التي سنحفظها لاحقًا بعد نجاح الدفع فقط
+    // ✅ استخدم normalizedCountry عند الحفظ
     const orderPayload = {
       orderId: nowId,
       products: products.map((p) => ({
         productId: p._id,
         quantity: p.quantity,
         name: p.name,
-        price: p.price, // ر.ع.
+        price: p.price,
         image: Array.isArray(p.image) ? p.image[0] : p.image,
         measurements: p.measurements || {},
         category: p.category || "",
-        // ✅ بطاقة الهدية على مستوى "كل منتج"
         giftCard: normalizeGift(p.giftCard) || undefined,
       })),
-      amountToCharge,            // ما يُتوقع دفعه الآن
-      shippingFee,               // محفوظ للحسابات
+      amountToCharge,
+      shippingFee,
       customerName,
       customerPhone,
-      country,
+      country: normalizedCountry, // 👈 هنا
       wilayat,
       description,
       email: email || "",
-      status: "completed",       // سيُحفظ فعليًا عند النجاح فقط
+      status: "completed",
       depositMode: !!depositMode,
       remainingAmount: depositMode ? Math.max(0, originalTotal - DEPOSIT_AMOUNT_OMR) : 0,
-      // ✅ إبقاء الحقل العام للتوافق — سيتم استخدامه فقط إذا لم توضع بطاقات على مستوى المنتجات
       giftCard: normalizeGift(giftCard),
     };
 
-    // نخزّن الحمولة مؤقتًا في الذاكرة بدل metadata الكبيرة
     ORDER_CACHE.set(nowId, orderPayload);
 
-    // نرسل لثواني فقط Meta خفيفة
     const data = {
       client_reference_id: nowId,
       mode: "payment",
@@ -169,7 +165,7 @@ router.post("/create-checkout-session", async (req, res) => {
         email: String(email || "غير محدد"),
         customer_name: String(customerName || ""),
         customer_phone: String(customerPhone || ""),
-        country: String(country || ""),
+        country: String(normalizedCountry || ""), // 👈 وأيضًا في الميتاداتا
         wilayat: String(wilayat || ""),
         description: String(description || "لا يوجد وصف"),
         shippingFee: String(shippingFee),
@@ -187,7 +183,7 @@ router.post("/create-checkout-session", async (req, res) => {
 
     const sessionId = response?.data?.data?.session_id;
     if (!sessionId) {
-      ORDER_CACHE.delete(nowId); // تنظيف لو فشل الإنشاء
+      ORDER_CACHE.delete(nowId);
       return res.status(500).json({
         error: "No session_id returned from Thawani",
         details: response?.data,
@@ -195,8 +191,6 @@ router.post("/create-checkout-session", async (req, res) => {
     }
 
     const paymentLink = `https://uatcheckout.thawani.om/pay/${sessionId}?key=${publish_key}`;
-
-    // لا نحفظ في القاعدة هنا
     res.json({ id: sessionId, paymentLink });
   } catch (error) {
     console.error("Error creating checkout session:", error?.response?.data || error);
@@ -206,6 +200,7 @@ router.post("/create-checkout-session", async (req, res) => {
     });
   }
 });
+
 
 
 // في ملف routes/orders.js
