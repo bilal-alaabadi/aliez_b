@@ -5,7 +5,7 @@ const app = express();
 const path = require("path");
 require("dotenv").config();
 const cookieParser = require("cookie-parser");
-const port = 5003;
+const port = 5000;
 
 // Middleware لمعالجة البيانات
 app.use(express.json({ limit: "25mb" }));
